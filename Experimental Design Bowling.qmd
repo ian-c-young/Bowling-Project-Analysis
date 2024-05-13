@@ -1,0 +1,422 @@
+---
+title: "STA 5301: Project (Spring 2024)"
+author: "Felicia Dicarlo, Jana Roste, Ian Young"
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+    self-contained-math: true
+---
+
+```{r, warning=FALSE, message=FALSE}
+# Load in packages
+library("googlesheets4")
+library("tidyverse")
+library("showtext")
+library("scales")
+font_add_google("Roboto Condensed")
+showtext_auto()
+theme_set(theme_minimal(base_family = "Roboto Condensed"))
+theme_update(panel.grid.minor = element_blank())
+library("tidymodels")
+library("jtools")
+library("cfcdae")
+library("olsrr")
+library("ggpubr")
+library("car")
+library("interactions")
+```
+
+# Background
+
+The objective of our experiment was to determine the difference in bowling ability between Felicia, Jana, and Ian and how various ball weights impact bowling ability. The response variable was the number of pins knocked over when bowling at a set of 10 pins (we did not record score as one traditionally does in bowling with two potential bowls per frame).     
+
+We decided on doing 10 runs. Within each run, each person (Felicia, Jana, and Ian) would bowl each weight of ball (6-lb, 8-lb, and 10-lb). In other words there are 9 observations per run (3 x 3). Prior to conducting the experiment, we randomized the order of ball weight by person within each run. This was to ensure that each person would bowl the 6-lb, 8-lb, and 10-lb balls in a random order in each run.  
+
+All three of us used the same 6-lb ball as there was only one available in the SUB. For the 8-lb and 10-lb balls, we each chose a ball with the appropriate-sized finger holes and used that size for the entire experiment. We each took a few warm-up bowls before we began recording scores.    
+
+We then bowled in the order determined by the randomized calculation. We utilized two lanes at the SUB. Again, we only recorded scores for our first bowl of two in a typical bowling frame to account for the accuracy variability with the number and position of pins for a second bowl.     
+
+We conducted 10 total runs/blocks for a total of 90 bowls (30 per person/ball). While we do not believe our scores got particularly better or worse with time, we did record the observation number to check for autocorrelation/linearity. Below is a sample of the first 9 observations in the data set.    
+
+Run: The “block” of data in which the weight of ball was randomized in. For example, within “Run 1,” each of us bowled each ball once. Each run included 9 total bowls.  
+
+Person: The person bowling the ball. This variable has three levels (Jana, Felicia, Ian).  
+
+Ball: The weight of the ball used. This variable has three levels (6-lb, 8-lb, 10-lb).  
+
+Score: The score of the first throw within a frame of bowling—always having 10 pins as a potential opportunity to knock down. Values are whole numbers ranging from 0 to 10. This is our dependent variable.     
+
+```{r, warning=FALSE, message=FALSE}
+# Read in data from google sheets without having to authorize
+gs4_deauth()
+dat <- read_sheet("https://docs.google.com/spreadsheets/d/1X28pE611EPgOBYWLjqyYbpIFo5ucv15LDkUzv1d7bUY/edit#gid=0")
+
+dat <- dat |> 
+  mutate(person = as_factor(person),
+         ball = as_factor(ball)) |> 
+  mutate(person = fct_relevel(person, "Felicia", "Ian", "Jana"),
+         ball = fct_relevel(ball, "6 lb", "10 lb", "8 lb"))
+
+# Glimpse of the data
+dat |> 
+  head(n = 9) |> 
+  kableExtra::kable(align = "c")
+```
+
+# Analysis
+
+## Summary Statistic & Plot
+
+Let's look at the relationship between person and ball on score through summary statistics and a plot.  
+
+First, produced below are the tables of the means and standard deviations. Looking at just the means by person we see Jana and Ian with similar scores while Felicia averages close to 2 less pins knocked down but also with a higher standard deviation. Looking at the means of just ball, the 6-lb ball scores lower than the other two.  
+
+Next, a summary table of means and balls are produced as well as a plot encompassing the same information. Looking at the plot we see a fair bit of variability as well as a few outliers. Generally speaking the 6-lb ball appears to score the lowest across all people, and Jana and Ian have higher overall scores. However, there is a lot of variability in the data.  
+
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 8
+
+# Means by person
+dat |> 
+  group_by(person) |> 
+  summarise(mean = round(mean(score), digits = 2),
+            sd = round(sd(score), digits = 2)) |> 
+  kableExtra::kable(align = "c")
+
+# Means by ball
+dat |> 
+  group_by(ball) |> 
+  summarise(mean = round(mean(score), digits = 2),
+            sd = round(sd(score), digits = 2)) |> 
+  kableExtra::kable(align = "c")
+
+# Means by person & ball
+dat |> 
+  group_by(person, ball) |> 
+  summarise(mean = round(mean(score), digits = 2),
+            sd = round(sd(score), digits = 2)) |> 
+  kableExtra::kable(align = "c")
+
+# Boxplot (person x ball level)
+dat |>
+ggplot(aes(x = factor(ball, levels = c("6 lb", "8 lb", "10 lb")), y = score, fill = ball)) +
+geom_boxplot(color = "black", alpha = 0.5, width = 0.5) +
+geom_jitter(width = 0.25, color = "firebrick1", size = 1.75) +
+labs(x = "\nBall", y = "Score") +
+labs(x = "\nBall", y = "Score") +
+facet_wrap(~ person, ncol= 3) +
+labs(title = "Bowling Score by Person & Ball",
+     caption = "Source: Dicarlo, Roste, Young") +
+theme_bw() +
+theme(axis.text = element_text(size = 21),
+      axis.title = element_text(size = 21),
+      plot.title = element_text(size = 24),
+      plot.caption = element_text(size = 18),
+      strip.text = element_text(size = 21),
+      legend.text = element_text(size = 21))  +
+guides(fill = guide_legend(title = NULL))
+```
+
+## Two-Way ANOVA
+
+To analyze the data further we will use a Two-Way ANOVA. No individual person is of interest as the reference group, so Jana whose name is last alphabetically is the reference group for the person factor. For the ball factor, the 8-lb ball was chosen as the reference group because it is the ball in the middle compared to a lower weight 6-lb ball and a heavier 10-lb ball. All of the overall hypothesis are stated below.        
+
+$H_0$: All people have the same mean score.         
+$H_a$: At least one person has a different mean score.       
+
+$H_0$: All balls have the same mean score.         
+$H_a$: At least one ball has a different mean score.   
+
+$H_0$: All interactions between person and ball have the same mean score.         
+$H_a$: At least one interaction between person and ball has a different mean score.
+
+### Models
+
+Below is the fit of all main effects and interactions. Looking at the ANOVA summary, person and ball are both significant with the interaction on the cusp of significance at p <.05.          
+```{r, warning=FALSE, message=FALSE}
+# Conduct Two-Way ANOVA
+bowl_anova <- aov(score ~ person*ball, data = dat)
+
+tidy(bowl_anova) |> 
+  kableExtra::kable(align = "c")
+```
+
+We can also run the ANOVA and look at the effects models. Below is the output. Note person1 is Felicia, person2 is Ian, ball1 is 6-lb, ball2 is 10-lb. The output shows Felicia is significant with p = 0.003, and Ian is not significant at p < .05 (p = .107, maybe weak association). The 6-lb ball is significant with p = 0.011, and the 10-lb ball is not (p = .107, maybe weak association). None of the interactions are significant, even though we saw in the overall ANOVA the interactions did chip away at some of the residuals.    
+```{r, warning=FALSE, message=FALSE}
+# Effects in Two-Way ANOVA
+bowl_lm <- lm(score ~ person*ball, data = dat)
+summ(model = bowl_lm, digits = 3)
+```
+
+If we remove and fit a model without the interactions the adjusted r-squared decreases while the same variables remain significant as above. We will proceed with the interaction model and check assumptions, because the initial ANOVA showed the interaction close to significant at p <.05 and explained more of the variance in score. Below the effects model without interactions is produced for reference.         
+```{r, warning=FALSE, message=FALSE}
+# Refit Two-Way ANOVA without interactions
+bowl2_lm <- lm(score ~ person + ball, data = dat)
+summ(model = bowl2_lm, digits = 3)
+```
+
+### Assumptions
+
+Normality:  
+
+When looking at the QQ plot of the model, the data appears like it make have some slight problems with normality, deviating from the red line. To further check normality, we utilized a Box Cox plot. As the Box Cox plot does not allow negative or 0 values, we first added a constant of “1” to all bowling scores. The Box Cox then showed an ideal lambda value of approximately 1.3. As 1.3 is closer to a power of 1, we decided not to transform the data (Note: We did check what a transformation would do to normality and the transformed data qqplot looked worse).    
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 8
+
+# Check normality
+ols_plot_resid_qq(bowl_lm, print_plot = FALSE) +
+  labs(caption = "Source: Dicarlo, Roste, Young") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 21),
+      axis.title = element_text(size = 21),
+      plot.title = element_text(size = 24),
+      plot.caption = element_text(size = 18),
+      strip.text = element_text(size = 21),
+      legend.text = element_text(size = 21))
+
+# Change data to look at box cox
+dat2 <- dat |> 
+  mutate(score = score + 1)
+bowlBoxCox_lm <- lm(score ~ person*ball, data = dat2)
+
+# Extract lambda values, log-likelihood, etc. to plot
+boxcox_results <- boxCox(bowlBoxCox_lm, plotit = FALSE)
+lambda_values <- boxcox_results$x
+log_likelihood <- boxcox_results$y
+df <- tibble(lambda = lambda_values, log_likelihood = log_likelihood)
+lambda_choice <- 
+  df |> 
+  filter(log_likelihood == max(log_likelihood)) |> 
+  pull(lambda)
+
+# Plot Box-Cox
+ggplot(df, aes(x = lambda, y = log_likelihood)) +
+  geom_line() +
+  geom_vline(xintercept = lambda_choice, linetype = "dashed", color = "firebrick1", size = 1) +
+  labs(x = "Lambda", 
+       y = "Log Likelihood", 
+       title = "Box-Cox Transformation Plot",
+       caption = "Source: Dicarlo, Roste, Young") +
+    theme_bw() + 
+    theme(axis.text = element_text(size = 21),
+      axis.title = element_text(size = 21),
+      plot.title = element_text(size = 24),
+      plot.caption = element_text(size = 18),
+      strip.text = element_text(size = 21),
+      legend.text = element_text(size = 21))
+
+```
+
+Equal Variance:  
+
+When looking at the residual vs fitted value plot, it appears we have equal variance among the groups as there was no clear pattern of increasing or decreasing variance ranges.      
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 8
+
+# Check equal variance
+ols_plot_resid_fit(bowl_lm, print_plot = FALSE) +
+  labs(caption = "Source: Dicarlo, Roste, Young") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 21),
+      axis.title = element_text(size = 21),
+      plot.title = element_text(size = 24),
+      plot.caption = element_text(size = 18),
+      strip.text = element_text(size = 21),
+      legend.text = element_text(size = 21))
+```
+
+Outliers:   
+
+Using the rstandard function we pull the standardized (internally studentized) residuals from the model with a threshold of +/- 2. Below a table of the observations that were marked as outliers by those criteria is produced. These data points will be left in the model as the points themselves do not appear to be a result of an error in data collection, or an unrealistic outcome.    
+```{r, warning=FALSE, message=FALSE}
+# Locate Outliers
+bowl_outliers <-
+  as_tibble(rstandard(bowl_lm)) |> 
+  mutate(obs_num = row_number()) |> 
+  filter(abs(value) > 2) |> 
+  pull(obs_num)
+
+# Table of outliers
+dat |> 
+  filter(obs_num %in% bowl_outliers) |> 
+  kableExtra::kable(align = "c")
+```
+
+Autocorrelation:  
+
+As we bowled for approximately an hour, we checked if our scores generally improved (higher score) or worsened (lower score) over time. We plotted the observation number on the x axis and the score on the y axis for each person. The black dashed line is a loess line plotted through the observations. Overall, there does not appear to be any trends with bowling and time.
+
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 8
+
+# Autocorrelation
+dat |> 
+  ggplot(aes(x = obs_num, y = score, color = person)) +
+  geom_point() +
+  geom_line() +
+  geom_smooth(method = "loess", se = FALSE, color = "black", linetype = "dashed") +
+  facet_wrap(~ person, nrow = 3) +
+  labs(x = "\nObservation Number", y = "Score") +
+  labs(title = "Bowling Score by Person Over Time",
+     caption = "Source: Dicarlo, Roste, Young") +
+theme_bw() +
+theme(axis.text = element_text(size = 21),
+      axis.title = element_text(size = 21),
+      plot.title = element_text(size = 24),
+      plot.caption = element_text(size = 18),
+      strip.text = element_text(size = 21),
+      legend.text = element_text(size = 21)) +
+  guides(color = FALSE)
+```
+
+### Conclusions 
+
+Since the model did not fail to meet assumptions, we will proceed with analyzing the results presented above along with pairwise comparisons.  
+
+In the output below the intercept represents the overall mean score (5.911). Felicia's mean score was significantly (p = 0.003) below the overall mean with a mean score of 4.67 (-1.244 less than the overall mean) adjusting for the the other people and ball weights. Ian had a score that was 0.656 above the overall mean for a mean score of 6.57, this was not significantly different from the mean at p = 0.107, adjusting for other people and ball weights. Jana was the reference group with her overall mean score at 6.50.  
+
+The 6-lb ball scores were significantly (p = 0.011) lower than the overall mean adjusting for people and ball weights with mean of 4.87 (-1.044 less than the overall mean). The 10-lb ball was not significantly different from the overall mean (p = 0.107) adjusting for people and ball, and it had a mean score of 6.57 (0.656 above the overall mean). The 8-lb ball was the reference group ball and had a mean score of 6.30.  
+
+The interactions were left in the model and explained some additional variance without overfitting the model, however, none of them were statistically significant.
+
+To conclude there is evidence that the person bowling and the weight of the ball did have an impact on the bowling scores. We look further into comparisons between groups below.  
+```{r, warning=FALSE, message=FALSE}
+summ(model = bowl_lm, digits = 3)
+```
+
+We chose to use All-Pairwise comparisons with a Tukey HSD test as we do not necessarily have a control group by person or ball weight.  
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+pairwise(bowl_lm, person, type = "hsd")
+pairwise(bowl_lm, ball, type = "hsd")
+```
+
+First, we will look at the Tukey HSD comparison among the people. The plot shows adjusted p-values that are less than 0.05 for comparing Jana and Felicia (p = 0.03), and comparing Ian and Felicia (p = 0.02). In other words, there is evidence to suggest bowling scores for Felicia differed from Jana and Ian, but not between Jana and Ian.   
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 8
+
+# Run Tukey HSD All Pairwise comparison and wrangle data for person
+pair_dat1 <- TukeyHSD(bowl_anova) |> 
+  tidy() |> 
+  filter(term == "person") |> 
+  mutate(adj.p.value = format(adj.p.value, scientific = FALSE, digits = 1))
+
+# Plotting comparison results from Tukey HSD Test
+pair_dat1 |> 
+  ggplot(aes(x = estimate, y = contrast)) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), 
+                 height = 0.2, 
+                 linewidth = 1, 
+                 alpha = 0.5, 
+                 color = "deepskyblue") +
+  geom_point(size = 2) +
+  geom_vline(xintercept = 1.665166, 
+             linetype = "dashed", 
+             color = "firebrick", 
+             linewidth = 1) +
+  geom_label(aes(label = paste("p =", adj.p.value), vjust = 1.5), 
+             size = 5) +
+  labs(x = "Estimate", 
+       y = "Pairs (Contrasts)", 
+       title = "Person Pairwise Group Comparisons Using Tukey HSD",
+       caption = "Source: Dicarlo, Roste, Young") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 21),
+      axis.title = element_text(size = 21),
+      plot.title = element_text(size = 24),
+      plot.caption = element_text(size = 18),
+      strip.text = element_text(size = 21),
+      legend.text = element_text(size = 21))  +
+guides(color = guide_legend(title = NULL))
+```
+
+Next, we will look at the Tukey HSD comparison among the balls. The plot shows adjusted p-values, there is a significant difference when comparing the 6-lb ball and the 10-lb ball (p = 0.04). The other ball comparisons are not significant. In other words, there is evidence to suggest bowling scores between the 6-lb ball and the 10-lb ball differ.     
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 8
+
+# Run Tukey HSD All Pairwise comparison and wrangle data for person
+pair_dat2 <- TukeyHSD(bowl_anova) |> 
+  tidy() |> 
+  filter(term == "ball") |> 
+  mutate(adj.p.value = format(adj.p.value, scientific = FALSE, digits = 1))
+
+# Plotting comparison results from Tukey HSD Test
+pair_dat2 |> 
+  ggplot(aes(x = estimate, y = contrast)) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), 
+                 height = 0.2, 
+                 linewidth = 1, 
+                 alpha = 0.5, 
+                 color = "deepskyblue") +
+  geom_point(size = 2) +
+  geom_vline(xintercept = 1.665166, 
+             linetype = "dashed", 
+             color = "firebrick", 
+             linewidth = 1) +
+  geom_label(aes(label = paste("p =", adj.p.value), vjust = 1.5), size = 5) +
+  labs(x = "Estimate", 
+       y = "Pairs (Contrasts)", 
+       title = "Ball Pairwise Group Comparisons Using Tukey HSD",
+       caption = "Source: Dicarlo, Roste, Young") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 21),
+      axis.title = element_text(size = 21),
+      plot.title = element_text(size = 24),
+      plot.caption = element_text(size = 18),
+      strip.text = element_text(size = 21),
+      legend.text = element_text(size = 21))  +
+guides(color = guide_legend(title = NULL))
+```
+
+Lastly, we will look at the Tukey HSD comparison among the people and balls. Do to the larger number of interactions we will reduce the chart down to p <= 0.10. This results in four significant comparisons (1) Jana w/10-lb ball compared to Felicia with 6-lb ball, (2) Jana with 10-lb ball compared to Felicia with 10-lb ball, (3) Ian with 8-lb ball compared to Felicia with 6-lb ball, and (4) Ian with 10-lb ball compared to Felicia with 6-lb ball. Across these different groups, again we see evidence suggesting differences in scores between Felicia compared to Jana and Ian. We also have evidence suggesting differences in scores between the 6-lb ball and other ball weights.   
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 8
+
+# Run Tukey HSD All Pairwise comparison and wrangle data for person
+pair_dat3 <- TukeyHSD(bowl_anova) |> 
+  tidy() |> 
+  filter(term == "person:ball") |> 
+  mutate(adj.p.value = format(adj.p.value, scientific = FALSE, digits = 1))
+
+# Plotting comparison results from Tukey HSD Test
+pair_dat3 |> 
+  filter(adj.p.value <= .1) |> 
+  ggplot(aes(x = estimate, y = contrast)) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), 
+                 height = 0.2, 
+                 linewidth = 1, 
+                 alpha = 0.5, 
+                 color = "deepskyblue") +
+  geom_point(size = 2) +
+  geom_label(aes(label = paste("p =", adj.p.value), vjust = 1.5), size = 5) +
+  labs(x = "Estimate", 
+       y = "Pairs (Contrasts)", 
+       title = "Person x Ball Pairwise Group Comparisons Using Tukey HSD",
+       caption = "Source: Dicarlo, Roste, Young") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 21),
+      axis.title = element_text(size = 21),
+      plot.title = element_text(size = 24),
+      plot.caption = element_text(size = 18),
+      strip.text = element_text(size = 21),
+      legend.text = element_text(size = 21))  +
+guides(color = guide_legend(title = NULL))
+```
+
+There is evidence suggesting variation in scores among people, with Felicia scoring lower than others. There is also variation in scores among weights of balls with the 6-lb ball being the lowest scoring ball. Various pairings of ball and weights showed evidence of differences. Taking into account the person bowling and ball they are using is helpful in explaining the score. Below we will look at other considerations to account for and look into in future experiments.       
+
+# Notes/Future Adjustements
+
+After a few frames, we realized that the lanes appeared a bit slanted to the left. While the slant stayed consistent throughout our experiment, utilizing a flatter bowling lane would help control our study. We utilized both lanes at random (during each person's turn the free lane of the two was used) and therefore we all used both lanes. While we do not know for sure, the lanes likely differed a bit regarding their flatness. If we could not use a different bowling location in the future, using the same lane for all frames would help to control the experiment a bit more.    
+
+We only had access to one 6-lb ball which had really small finger holes. The finger holes were then different for this ball as compared to our 8 and 10-lb balls. If repeating this experiment again, we should make sure all of our balls have the same size finger holes by either finding different 6-lb balls or substituting the 6-lb ball for a 12-lb ball. However, we were all having to adjust for the 6-lb ball, so that factor was consistent for all of us. Recording or using hole size as a factor, could be something further explored in a future experiment.   
+
+To create a bit more consistency, it might be of benefit to utilize the same style of bowl throughout the entire experiment. At least one of us bowled some frames with fingers in the holes and some frames with fingers outside of the holes.   
+
+Below the contrasts for the factors are produce for reference.  
+```{r, warning=FALSE, message=FALSE}
+# Contrasts for reference
+contrasts(dat$person)
+contrasts(dat$ball)
+```
